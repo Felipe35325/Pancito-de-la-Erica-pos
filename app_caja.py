@@ -6,8 +6,9 @@ from sqlalchemy import text
 
 st.set_page_config(page_title="Pancito de la Erica - POS", layout="wide")
 
-# --- CONEXIÓN A LA NUBE (O LOCAL) ---
-conn = st.connection("sqlite", type="sql", url="sqlite:///caja.db")
+# --- CONEXIÓN A LA NUBE BLINDADA ---
+# Se eliminó la base de prueba local. Ahora el sistema ESTÁ OBLIGADO a conectarse a Supabase.
+conn = st.connection("postgresql", type="sql")
 
 # --- ZONA HORARIA DE CHILE ---
 zona_chile = pytz.timezone('America/Santiago')
@@ -69,6 +70,8 @@ if 'codigo_pendiente' not in st.session_state:
     st.session_state.codigo_pendiente = None
 if 'peso_pendiente' not in st.session_state:
     st.session_state.peso_pendiente = None
+if 'codigo_activo_stock' not in st.session_state:
+    st.session_state.codigo_activo_stock = None
 if 'usuario_actual' not in st.session_state:
     st.session_state.usuario_actual = None
 if 'rol_actual' not in st.session_state:
@@ -103,6 +106,14 @@ if st.session_state.rol_actual is None:
                     st.rerun()
                 else:
                     st.error("❌ Usuario o contraseña incorrectos.")
+                    
+        # --- IMAGEN DE BANNER DEBAJO DEL INGRESO ---
+        st.markdown("<br>", unsafe_allow_html=True)
+        try:
+            st.image("banner_erica.jpg.png", use_container_width=True)
+        except Exception as e:
+            pass
+
     st.stop()
 
 # ==========================================
@@ -117,8 +128,16 @@ with st.sidebar:
         st.session_state.usuario_actual = None
         st.session_state.rol_actual = None
         st.session_state.carrito = [] 
+        st.session_state.codigo_activo_stock = None
         st.session_state.confirmar_cierre = False
         st.rerun()
+
+    # --- IMAGEN BONITA DEBAJO DE CERRAR SESIÓN ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    try:
+        st.image("logo_erica.jpeg.jpeg", use_container_width=True)
+    except Exception as e:
+        pass
 
 st.title("🛒 Sistema de Control de Stock y Ventas - Pancito de la Erica")
 
@@ -142,7 +161,6 @@ else:
 with tab_venta:
     st.subheader("Caja Registradora")
     
-    # 1. BÚSQUEDA POR CÓDIGO Y MAGIA DE LA BALANZA
     with st.form("form_escaner", clear_on_submit=True):
         codigo_escaneado = st.text_input("Pistolear Código de Barras", key="escaner_input", help="Presiona Enter o deja que la pistola lo haga")
         btn_escanear = st.form_submit_button("Agregar al carrito")
@@ -150,17 +168,13 @@ with tab_venta:
         if btn_escanear and codigo_escaneado:
             codigo = codigo_escaneado.strip()
             
-            # --- NUEVA INTELIGENCIA: CALCULAR KILOS AUTOMÁTICAMENTE ---
             if len(codigo) == 13 and codigo.startswith("20"):
-                # Extraemos el código de 5 dígitos del producto (Ej: "11111")
                 codigo_plu = codigo[2:7]
-                # Por si la balanza le pone ceros a la izquierda (Ej: "00123" -> "123")
                 codigo_plu_limpio = codigo_plu.lstrip("0") 
                 if codigo_plu_limpio == "": codigo_plu_limpio = "0"
                 
                 precio_balanza = int(codigo[7:12])
                 
-                # Buscamos en el inventario a ver si existe ese pan
                 df_producto = conn.query("SELECT codigo, nombre, precio, tipo_unidad FROM productos WHERE codigo = :c OR codigo = :cl", 
                                          params={"c": codigo_plu, "cl": codigo_plu_limpio}, ttl=0)
                 
@@ -169,7 +183,6 @@ with tab_venta:
                     bd_nombre = df_producto.iloc[0]['nombre']
                     bd_precio_kilo = df_producto.iloc[0]['precio']
                     
-                    # Cálculo matemático del peso
                     kilos_calculados = precio_balanza / bd_precio_kilo if bd_precio_kilo > 0 else 0
                     
                     st.session_state.carrito.append({
@@ -180,7 +193,6 @@ with tab_venta:
                         "cantidad": kilos_calculados
                     })
                 else:
-                    # Fallback de seguridad: Si no lo encuentra en BD, pasa el cobro pero sin descontar stock
                     st.session_state.carrito.append({
                         "codigo": codigo, 
                         "nombre": "Pan (Código Balanza no registrado)", 
@@ -188,10 +200,8 @@ with tab_venta:
                         "tipo": "Unidad", 
                         "cantidad": 1
                     })
-            # --- FIN DE LA MAGIA DE LA BALANZA ---
             
             else:
-                # Lógica para códigos normales (Galletas, Bebidas, etc.)
                 df_producto = conn.query("SELECT nombre, precio, tipo_unidad FROM productos WHERE codigo = :c", params={"c": codigo}, ttl=0)
                 if not df_producto.empty:
                     nombre_prod = df_producto.iloc[0]['nombre']
@@ -210,7 +220,6 @@ with tab_venta:
                 else:
                     st.session_state.codigo_pendiente = codigo
 
-    # 2. PANTALLA EMERGENTE PARA PESO MANUAL (Solo si pasas un producto a granel sin balanza)
     if st.session_state.peso_pendiente:
         prod = st.session_state.peso_pendiente
         st.warning(f"⚖️ **{prod['nombre']}** se vende por kilo. (Precio base: {formato_peso(prod['precio_kg'])} / Kg)")
@@ -240,7 +249,6 @@ with tab_venta:
             st.session_state.peso_pendiente = None
             st.rerun()
 
-    # 3. REGISTRO RÁPIDO DE CÓDIGO NUEVO
     if st.session_state.codigo_pendiente and not st.session_state.peso_pendiente:
         st.error(f"⚠️ El código {st.session_state.codigo_pendiente} no está registrado.")
         with st.form("form_rapido_producto"):
@@ -438,7 +446,7 @@ with tab_venta:
                     st.session_state.confirmar_cierre = True
                     st.rerun()
             else:
-                st.warning("⚠️ **¿Estás seguro/a de cerrar la caja de hoy?**\n\nAl confirmar, los contadores de arriba se reiniciarán a $0 para el siguiente turno. Las ventas de hoy quedarán guardadas a salvo en tu Historial y Análisis Semanal.")
+                st.warning("⚠ **¿Estás seguro/a de cerrar la caja de hoy?**\n\nAl confirmar, los contadores de arriba se reiniciarán a $0 para el siguiente turno. Las ventas de hoy quedarán guardadas a salvo en tu Historial y Análisis Semanal.")
                 col_si, col_no = st.columns(2)
                 
                 with col_si:
@@ -461,31 +469,84 @@ if st.session_state.rol_actual == 'jefe' and tab_stock is not None:
     with tab_stock:
         st.subheader("Gestión de Inventario y Precios")
         col_ingreso, col_editar = st.columns(2)
+        
         with col_ingreso:
             st.markdown("### ➕ Ingreso de Mercadería")
-            tipo_unidad = st.radio("Se vende por:", ["Unidad", "Kilos"], horizontal=True)
-            with st.form("form_nuevo_producto_stock", clear_on_submit=True):
-                codigo_stock = st.text_input("Código de barras / SKU")
-                nombre_stock = st.text_input("Nombre del producto")
-                precio_stock = st.number_input("Precio de venta ($)", min_value=0.0, step=100.0)
-                if tipo_unidad == "Unidad":
-                    cantidad_stock = st.number_input("Cantidad a ingresar (Enteros)", min_value=1, step=1, value=1)
-                else:
-                    cantidad_stock = st.number_input("Cantidad a ingresar (Decimales)", min_value=0.01, step=0.10, value=1.00, format="%.2f")
-                submit_stock = st.form_submit_button("Registrar en Inventario")
+            
+            st.info("👇 Haz clic adentro del recuadro gris para que parpadee la rayita y luego pasa la pistola.")
+            with st.form("form_escaner_stock", clear_on_submit=True):
+                codigo_ingresado = st.text_input("Pistolear Código de Barras o SKU", key="input_scan_stock", placeholder="Haz clic aquí antes de pistolear...")
+                btn_buscar_stock = st.form_submit_button("Buscar / Ingresar Producto")
                 
-                if submit_stock and codigo_stock and nombre_stock:
-                    df_check = conn.query("SELECT codigo FROM productos WHERE codigo = :c", params={"c": codigo_stock}, ttl=0)
-                    with conn.session as s:
-                        if not df_check.empty:
-                            s.execute(text("UPDATE productos SET stock = stock + :cant, precio = :p, tipo_unidad = :tu WHERE codigo = :c"), 
-                                      {"cant": cantidad_stock, "p": precio_stock, "tu": tipo_unidad, "c": codigo_stock})
-                            st.info(f"Inventario actualizado. Se sumaron {cantidad_stock} a '{nombre_stock}'.")
+                if btn_buscar_stock and codigo_ingresado:
+                    st.session_state.codigo_activo_stock = codigo_ingresado.strip()
+                    st.rerun()
+            
+            if st.session_state.codigo_activo_stock:
+                codigo_actual = st.session_state.codigo_activo_stock
+                df_check = conn.query("SELECT * FROM productos WHERE codigo = :c", params={"c": codigo_actual}, ttl=0)
+                
+                if not df_check.empty:
+                    # Producto EXISTENTE
+                    prod_data = df_check.iloc[0]
+                    txt_unidad = "Unidades" if prod_data['tipo_unidad'] == "Unidad" else "Kilos"
+                    stock_fmt = int(prod_data['stock']) if prod_data['tipo_unidad'] == "Unidad" else f"{prod_data['stock']:.2f}"
+                    
+                    st.success(f"📦 Producto encontrado: **{prod_data['nombre']}** (Stock actual: {stock_fmt} {txt_unidad})")
+                    
+                    with st.form("form_update_stock"):
+                        st.write(f"Agregando mercadería al código: `{codigo_actual}`")
+                        nuevo_precio = st.number_input("Actualizar Precio de venta ($)", min_value=0.0, step=100.0, value=float(prod_data['precio']))
+                        
+                        if prod_data['tipo_unidad'] == "Unidad":
+                            cantidad_a_sumar = st.number_input("Cantidad a sumar (Enteros)", min_value=1, step=1, value=1)
                         else:
-                            s.execute(text("INSERT INTO productos (codigo, nombre, precio, stock, tipo_unidad) VALUES (:c, :n, :p, :stk, :tu)"), 
-                                      {"c": codigo_stock, "n": nombre_stock, "p": precio_stock, "stk": cantidad_stock, "tu": tipo_unidad})
+                            cantidad_a_sumar = st.number_input("Cantidad a sumar (Decimales)", min_value=0.01, step=0.10, value=1.00, format="%.2f")
+                        
+                        btn_guardar_existente = st.form_submit_button("✔️ Sumar al Inventario", type="primary", use_container_width=True)
+                        
+                        if btn_guardar_existente:
+                            with conn.session as s:
+                                s.execute(text("UPDATE productos SET stock = stock + :cant, precio = :p WHERE codigo = :c"), 
+                                          {"cant": cantidad_a_sumar, "p": nuevo_precio, "c": codigo_actual})
+                                s.commit()
+                            st.session_state.codigo_activo_stock = None
+                            st.success(f"¡Inventario actualizado para '{prod_data['nombre']}'!")
+                            st.rerun()
+                            
+                    if st.button("❌ Cancelar", key="btn_canc_ext"):
+                        st.session_state.codigo_activo_stock = None
+                        st.rerun()
+                        
+                else:
+                    # Producto NUEVO
+                    st.info(f"✨ Código `{codigo_actual}` no registrado. Completa los datos.")
+                    
+                    tipo_unidad = st.radio("Se vende por:", ["Unidad", "Kilos"], horizontal=True, key="radio_tipo_stock")
+                    
+                    with st.form("form_nuevo_stock"):
+                        nombre_stock = st.text_input("Nombre del producto")
+                        precio_stock = st.number_input("Precio de venta ($)", min_value=0.0, step=100.0)
+                        
+                        if tipo_unidad == "Unidad":
+                            cantidad_stock = st.number_input("Cantidad inicial (Enteros)", min_value=1, step=1, value=1)
+                        else:
+                            cantidad_stock = st.number_input("Cantidad inicial (Decimales)", min_value=0.01, step=0.10, value=1.00, format="%.2f")
+                            
+                        btn_guardar_nuevo = st.form_submit_button("✔️ Registrar en Inventario", type="primary", use_container_width=True)
+                        
+                        if btn_guardar_nuevo and nombre_stock:
+                            with conn.session as s:
+                                s.execute(text("INSERT INTO productos (codigo, nombre, precio, stock, tipo_unidad) VALUES (:c, :n, :p, :stk, :tu)"), 
+                                          {"c": codigo_actual, "n": nombre_stock, "p": precio_stock, "stk": cantidad_stock, "tu": tipo_unidad})
+                                s.commit()
+                            st.session_state.codigo_activo_stock = None
                             st.success(f"Producto '{nombre_stock}' registrado con éxito.")
-                        s.commit()
+                            st.rerun()
+                            
+                    if st.button("❌ Cancelar", key="btn_canc_nuevo"):
+                        st.session_state.codigo_activo_stock = None
+                        st.rerun()
         
         with col_editar:
             st.markdown("### ✏️ Edición y Limpieza de Productos")
