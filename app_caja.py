@@ -106,14 +106,6 @@ if st.session_state.rol_actual is None:
                     st.rerun()
                 else:
                     st.error("❌ Usuario o contraseña incorrectos.")
-                    
-        # --- IMAGEN DE BANNER DEBAJO DEL INGRESO ---
-        st.markdown("<br>", unsafe_allow_html=True)
-        try:
-            st.image("banner_erica.jpg.png", use_container_width=True)
-        except Exception as e:
-            pass
-
     st.stop()
 
 # ==========================================
